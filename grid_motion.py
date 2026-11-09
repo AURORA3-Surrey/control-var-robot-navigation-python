@@ -7,9 +7,9 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_srvs.srv import SetBool
-from nav_utils import (TimedNode, TwistSender, call_service, clamp, ignore_stop_signals, init_ros, normalize,
+from nav_utils import (TimedNode, TwistSender, call_service, ignore_stop_signals, init_ros, normalize,
                        send_zero_burst, stop_on_signals)
-from grid_commands import Drive, MoveTo, ReturnHomeDiff, Turn, Wait
+from grid_commands import Drive, MoveTo, ReturnHomeDiff, TrackingCorrection, Turn, Wait
 
 
 def add_grid_arguments(p, *, position_tol, return_position_tol, angle_tol, homing_timeout):
@@ -37,6 +37,55 @@ def add_grid_arguments(p, *, position_tol, return_position_tol, angle_tol, homin
     p.add_argument('--motor-power-service', default='/motor_power')
     p.add_argument('--corr-max-d-error', type=float, default=1.0)
 
+
+def grid_dimensions(args):
+    # (rows, cols, cell size along x, cell size along y)
+    rows = args.grid_size
+    cols = args.grid_cols if args.grid_cols is not None else args.grid_size
+    csx = args.cell_size_x if args.cell_size_x is not None else args.cell_size
+    csy = args.cell_size_y if args.cell_size_y is not None else args.cell_size
+    return rows, cols, csx, csy
+
+
+def build_grid_plan(args, home):
+    # path over the grid starting at home = (x, y, yaw) then back
+    rows, cols, csx, csy = grid_dimensions(args)
+    hx, hy, hyaw = home
+    omni = args.platform == 'omni'
+    plan = [Wait(0.3)]
+
+    if omni:
+        waypoints = []
+        for row in range(rows):
+            wy = hy + row * csy
+            col_order = range(cols) if row % 2 == 0 else reversed(range(cols))
+            for col in col_order:
+                waypoints.append((hx + col * csx, wy))
+        for wx, wy in waypoints[1:]:
+            plan.append(MoveTo(wx, wy))
+    else:
+        intended_yaw = hyaw  # accumulates ideal angle so turn errors don't add up
+        for row in range(rows):
+            for _ in range(cols - 1):
+                plan.append(Drive(csx))
+            if row < rows - 1:  # turn, step sideways, turn
+                turn = -math.pi / 2 if row % 2 == 0 else math.pi / 2
+                spin = 1.0 if turn >= 0 else -1.0
+                intended_yaw = normalize(intended_yaw + turn)
+                plan.append(Turn(intended_yaw, spin))
+                plan.append(Drive(csy))
+                intended_yaw = normalize(intended_yaw + turn)
+                plan.append(Turn(intended_yaw, spin))
+
+    if not args.no_return_home:
+        if omni:
+            plan.append(MoveTo(hx, hy))
+            plan.append(Turn(hyaw))
+        else:
+            plan.append(ReturnHomeDiff())
+
+    plan.append(Wait(0.8))
+    return plan
 
 
 class GridMotionNode(TimedNode):
@@ -69,13 +118,11 @@ class GridMotionNode(TimedNode):
         self.x = self.y = self.yaw = 0.0
         self.have_pose = False
         self.home = None
-        self.intended_yaw = None
 
         self.plan = deque()      # queue of command objects
         self.current_cmd = None  # command being executed
 
-        self.corr_state = {}
-        self.corr_filtered = {}
+        # filled by store_pose()
         self.pose_seq = 0
         self.last_pose_time = None
         self.pose_stamp = None
@@ -90,6 +137,7 @@ class GridMotionNode(TimedNode):
         self.timer_period = 1.0 / self.args.rate
         self.control_timer = None
         self.sender = TwistSender(self, self.pub, args.max_accel, args.max_ang_accel, self.timer_period)
+        self.correction = TrackingCorrection(self.get_time_sec, args)
 
     def store_pose(self, x, y, yaw, stamp):
         self.x = x
@@ -106,46 +154,8 @@ class GridMotionNode(TimedNode):
     def send(self, vx=0.0, vy=0.0, wz=0.0):
         self.sender.send(vx, vy, wz)
 
-    def reset_correction(self):
-        self.corr_state.clear()
-        self.corr_filtered.clear()
-
-    def tracking_correction(self, axis, error, gain, damping_gain, max_speed, tol):
-        now = self.get_time_sec()
-        seq = self.pose_seq
-        # vicon message stamps
-        stamp = self.pose_stamp if self.pose_stamp is not None else now
-        prev = self.corr_state.get(axis)
-        d_error = 0.0
-
-        if prev is None:
-            self.corr_state[axis] = (error, stamp, now, seq)
-        else:
-            prev_error, prev_stamp, prev_now, prev_seq = prev
-            if seq != prev_seq:
-                dt = stamp - prev_stamp if stamp > prev_stamp else now - prev_now
-                if dt > 1e-6:
-                    d_error = (error - prev_error) / dt
-                    d_error = clamp(d_error, -self.args.corr_max_d_error, self.args.corr_max_d_error)
-                self.corr_state[axis] = (error, stamp, now, seq)
-
-        if abs(error) <= tol:
-            raw_target = 0.0
-        else:
-            raw_target = gain * error + damping_gain * d_error
-            raw_target = clamp(raw_target, -max_speed, max_speed)
-
-        prev_filt = self.corr_filtered.get(axis)
-        if prev_filt is None or self.args.corr_filter_tau <= 0:
-            filtered = raw_target
-        else:
-            prev_val, prev_t = prev_filt
-            dt_f = now - prev_t
-            alpha = clamp(dt_f / (self.args.corr_filter_tau + dt_f), 0.0, 1.0)
-            filtered = prev_val + (raw_target - prev_val) * alpha
-
-        self.corr_filtered[axis] = (filtered, now)
-        return filtered
+    def correct(self, axis, error, max_speed, tol):
+        return self.correction.compute(axis, error, max_speed, tol, self.pose_seq, self.pose_stamp)
 
     def initialize(self):
         # wait for pose, enable motors, save starting pose
@@ -165,72 +175,14 @@ class GridMotionNode(TimedNode):
         self.zero_odometry()
 
         self.home = self.pose()
-        self.intended_yaw = self.home[2]
         self.get_logger().info(f'home: x={self.home[0]:.3f} y={self.home[1]:.3f} '
                                f'yaw={math.degrees(self.home[2]):+.2f} deg')
 
-
-    def plan_wait(self, duration):
-        self.plan.append(Wait(duration))
-
-    def plan_turn(self, target_yaw):
-        self.plan.append(Turn(target_yaw))
-
-    def plan_turn_by(self, angle):
-        if self.intended_yaw is None:
-            _, _, self.intended_yaw = self.pose()
-        self.intended_yaw = normalize(self.intended_yaw + angle)
-        self.plan.append(Turn(self.intended_yaw, spin=1.0 if angle >= 0 else -1.0))
-
-    def plan_drive(self, distance):
-        self.plan.append(Drive(distance))
-
-    def plan_move_to(self, target_x, target_y):
-        self.plan.append(MoveTo(target_x, target_y))
-
-    def generate_grid_plan(self):
-        self.plan.clear()
-        rows = self.args.grid_size
-        cols = self.args.grid_cols if self.args.grid_cols is not None else self.args.grid_size
-        csx = self.args.cell_size_x if self.args.cell_size_x is not None else self.args.cell_size
-        csy = self.args.cell_size_y if self.args.cell_size_y is not None else self.args.cell_size
-        self.get_logger().info(f'Generating {rows} rows x {cols} cols grid plan ({self.args.platform})')
-
-        self.plan_wait(0.3)
-
-        if self.args.platform == 'omni':
-            hx, hy, _ = self.home
-            waypoints = []
-            for row in range(rows):
-                wy = hy + row * csy
-                col_order = range(cols) if row % 2 == 0 else reversed(range(cols))
-                for col in col_order:
-                    waypoints.append((hx + col * csx, wy))
-            for wx, wy in waypoints[1:]:
-                self.plan_move_to(wx, wy)
-        else:
-            for row in range(rows):
-                for _ in range(cols - 1):
-                    self.plan_drive(csx)
-                if row < rows - 1:
-                    turn = -math.pi / 2 if row % 2 == 0 else math.pi / 2
-                    self.plan_turn_by(turn)
-                    self.plan_drive(csy)
-                    self.plan_turn_by(turn)
-
-        if not self.args.no_return_home:
-            hx, hy, hyaw = self.home
-            if self.args.platform == 'omni':
-                self.plan_move_to(hx, hy)
-                self.plan_turn(hyaw)
-            else:
-                self.plan.append(ReturnHomeDiff())
-
-        self.plan_wait(0.8)
-
-
     def start_control_loop(self):
-        self.generate_grid_plan()
+        rows, cols, _, _ = grid_dimensions(self.args)
+        self.get_logger().info(f'Generating {rows} rows x {cols} cols grid plan ({self.args.platform})...')
+        self.plan.clear()
+        self.plan.extend(build_grid_plan(self.args, self.home))
         self.control_timer = self.create_timer(self.timer_period, self.control_tick)
 
     def control_tick(self):
@@ -261,8 +213,8 @@ class GridMotionNode(TimedNode):
             self.current_cmd = self.plan.popleft()
             self.current_cmd.start_time = now
             self.current_cmd.start_pose = self.pose()
-            self.reset_correction()
-            self.get_logger().info(f"executing {self.current_cmd['type']}")
+            self.correction.reset()
+            self.get_logger().info(f"executing {self.current_cmd.name}")
 
         if self.current_cmd.step(self, now):
             self.current_cmd = None

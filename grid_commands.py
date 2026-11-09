@@ -38,6 +38,63 @@ def duration_for_peak(distance, max_speed):
     return PEAK_FACTOR * distance / max_speed
 
 
+def heading_hold(node, error):
+    # yaw rate that removes error
+    limit = HEADING_FIX_LIMIT * node.args.turn_speed
+    return clamp(HEADING_GAIN * error, -limit, limit)
+
+
+class TrackingCorrection:
+    # single axis pd correction followed by lp filter
+
+    def __init__(self, clock, args):
+        self.clock = clock  # node time in seconds
+        self.a = args
+        self.state = {}     # axis to (error, stamp, now, seq) of the last sample used for d error
+        self.filtered = {}  # axis to (value, time) of the last filter output
+
+    def reset(self):
+        self.state.clear()
+        self.filtered.clear()
+
+    def compute(self, axis, error, max_speed, tol, pose_seq, pose_stamp):
+        gain, damping_gain = self.a.corr_gain, self.a.corr_damping_gain
+        now = self.clock()
+        seq = pose_seq
+        stamp = pose_stamp if pose_stamp is not None else now
+        prev = self.state.get(axis)
+        d_error = 0.0
+
+        if prev is None:
+            self.state[axis] = (error, stamp, now, seq)
+        else:
+            prev_error, prev_stamp, prev_now, prev_seq = prev
+            if seq != prev_seq:
+                dt = stamp - prev_stamp if stamp > prev_stamp else now - prev_now
+                if dt > 1e-6:
+                    d_error = (error - prev_error) / dt
+                    d_error = clamp(d_error, -self.a.corr_max_d_error, self.a.corr_max_d_error)
+                self.state[axis] = (error, stamp, now, seq)
+
+        if abs(error) <= tol:
+            raw_target = 0.0
+        else:
+            raw_target = gain * error + damping_gain * d_error
+            raw_target = clamp(raw_target, -max_speed, max_speed)
+
+        prev_filt = self.filtered.get(axis)
+        if prev_filt is None or self.a.corr_filter_tau <= 0:
+            filtered = raw_target
+        else:
+            prev_val, prev_t = prev_filt
+            dt_f = now - prev_t
+            alpha = clamp(dt_f / (self.a.corr_filter_tau + dt_f), 0.0, 1.0)
+            filtered = prev_val + (raw_target - prev_val) * alpha
+
+        self.filtered[axis] = (filtered, now)
+        return filtered
+
+
 class Command:
     name = ''
     start_time = 0.0
@@ -106,8 +163,7 @@ class Turn(Command):
         expected = angle * position_factor(tau)
         error = expected - turned if abs(angle) > math.pi else normalize(expected - turned)
 
-        w_correction = node.tracking_correction('turn', error, a.corr_gain, a.corr_damping_gain,
-                                                 a.turn_speed, a.angle_tol)
+        w_correction = node.correct('turn', error, a.turn_speed, a.angle_tol)
         node.send(wz=w_ff + w_correction)
 
         if homing and abs(error) <= a.angle_tol and abs(node.yaw_rate) < 0.05:
@@ -159,11 +215,9 @@ class Drive(Command):
         expected = dist * position_factor(tau)
         error = expected - travelled
 
-        v_correction = node.tracking_correction('drive', error, a.corr_gain, a.corr_damping_gain,
-                                                 a.max_speed, a.position_tol)
-        heading_fix = clamp(
-            HEADING_GAIN * normalize(start_yaw - yaw - clamp(LATERAL_GAIN * lateral, -LATERAL_CLAMP, LATERAL_CLAMP)),
-            -HEADING_FIX_LIMIT * a.turn_speed, HEADING_FIX_LIMIT * a.turn_speed)
+        v_correction = node.correct('drive', error, a.max_speed, a.position_tol)
+        heading_fix = heading_hold(node, normalize(
+            start_yaw - yaw - clamp(LATERAL_GAIN * lateral, -LATERAL_CLAMP, LATERAL_CLAMP)))
         node.send(vx=v_ff + v_correction, wz=heading_fix)
 
         if homing and abs(error) <= a.position_tol and abs(node.speed) < 0.02:
@@ -210,16 +264,13 @@ class MoveTo(Command):
         expected_x, expected_y = start_x + dx * pf, start_y + dy * pf
         err_x, err_y = expected_x - x, expected_y - y
 
-        vx_corr = node.tracking_correction('move_x', err_x, a.corr_gain, a.corr_damping_gain,
-                                            a.max_speed, a.position_tol)
-        vy_corr = node.tracking_correction('move_y', err_y, a.corr_gain, a.corr_damping_gain,
-                                            a.max_speed, a.position_tol)
+        vx_corr = node.correct('move_x', err_x, a.max_speed, a.position_tol)
+        vy_corr = node.correct('move_y', err_y, a.max_speed, a.position_tol)
 
         vx_world = (dx / T) * vf + vx_corr
         vy_world = (dy / T) * vf + vy_corr
         vx_body, vy_body = world_to_body(vx_world, vy_world, yaw)
-        heading_fix = clamp(HEADING_GAIN * normalize(start_yaw - yaw), -HEADING_FIX_LIMIT * a.turn_speed,
-                            HEADING_FIX_LIMIT * a.turn_speed)
+        heading_fix = heading_hold(node, normalize(start_yaw - yaw))
 
         node.send(vx=vx_body, vy=vy_body, wz=heading_fix)
 
