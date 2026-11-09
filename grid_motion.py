@@ -9,38 +9,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_srvs.srv import SetBool
 from nav_utils import (TimedNode, TwistSender, call_service, clamp, ignore_stop_signals, init_ros, normalize,
                        send_zero_burst, stop_on_signals)
-
-
-PEAK_FACTOR = 35.0/16.0    # velocity_factor at peak (tau=0.5)
-HEADING_GAIN = 1.8         # yaw P-gain for heading hold
-LATERAL_GAIN = 2.0         # lateral offset to yaw error
-LATERAL_CLAMP = 0.35       # max lateral error [m]
-HEADING_FIX_LIMIT = 0.5    # heading_fix clamp
-
-
-def world_to_body(vx_world, vy_world, yaw):
-    # rotate world velocity into robot body frame (omni only)
-    c, s = math.cos(yaw), math.sin(yaw)
-    vx_body = vx_world * c + vy_world * s
-    vy_body = -vx_world * s + vy_world * c
-    return vx_body, vy_body
-
-
-def position_factor(tau):
-    tau = clamp(tau, 0.0, 1.0)
-    return 35 * tau**4 - 84 * tau**5 + 70 * tau**6 - 20 * tau**7
-
-
-def velocity_factor(tau):
-    tau = clamp(tau, 0.0, 1.0)
-    return 140 * tau**3 - 420 * tau**4 + 420 * tau**5 - 140 * tau**6
-
-
-def duration_for_peak(distance, max_speed):
-    distance = abs(distance)
-    if distance <= 0 or max_speed <= 0:
-        return 0.0
-    return PEAK_FACTOR * distance / max_speed
+from grid_commands import Drive, MoveTo, ReturnHomeDiff, Turn, Wait
 
 
 def add_grid_arguments(p, *, position_tol, return_position_tol, angle_tol, homing_timeout):
@@ -102,10 +71,8 @@ class GridMotionNode(TimedNode):
         self.home = None
         self.intended_yaw = None
 
-        self.plan = deque()      # queue of command dicts
+        self.plan = deque()      # queue of command objects
         self.current_cmd = None  # command being executed
-        self.cmd_start_time = 0.0
-        self.cmd_start_pose = (0.0, 0.0, 0.0)
 
         self.corr_state = {}
         self.corr_filtered = {}
@@ -204,22 +171,22 @@ class GridMotionNode(TimedNode):
 
 
     def plan_wait(self, duration):
-        self.plan.append({'type': 'wait', 'duration': duration})
+        self.plan.append(Wait(duration))
 
     def plan_turn(self, target_yaw):
-        self.plan.append({'type': 'turn', 'target_yaw': target_yaw})
+        self.plan.append(Turn(target_yaw))
 
     def plan_turn_by(self, angle):
         if self.intended_yaw is None:
             _, _, self.intended_yaw = self.pose()
         self.intended_yaw = normalize(self.intended_yaw + angle)
-        self.plan.append({'type': 'turn', 'target_yaw': self.intended_yaw, 'spin': 1.0 if angle >= 0 else -1.0})
+        self.plan.append(Turn(self.intended_yaw, spin=1.0 if angle >= 0 else -1.0))
 
     def plan_drive(self, distance):
-        self.plan.append({'type': 'drive', 'distance': distance})
+        self.plan.append(Drive(distance))
 
     def plan_move_to(self, target_x, target_y):
-        self.plan.append({'type': 'move_to', 'target_x': target_x, 'target_y': target_y})
+        self.plan.append(MoveTo(target_x, target_y))
 
     def generate_grid_plan(self):
         self.plan.clear()
@@ -257,7 +224,7 @@ class GridMotionNode(TimedNode):
                 self.plan_move_to(hx, hy)
                 self.plan_turn(hyaw)
             else:
-                self.plan.append({'type': 'return_home_diff'})
+                self.plan.append(ReturnHomeDiff())
 
         self.plan_wait(0.8)
 
@@ -292,180 +259,12 @@ class GridMotionNode(TimedNode):
                 return
 
             self.current_cmd = self.plan.popleft()
-            self.cmd_start_time = now
-            self.cmd_start_pose = self.pose()
+            self.current_cmd.start_time = now
+            self.current_cmd.start_pose = self.pose()
             self.reset_correction()
             self.get_logger().info(f"executing {self.current_cmd['type']}")
 
-        # execute current command
-        cmd = self.current_cmd
-        ctype = cmd['type']
-        elapsed = now - self.cmd_start_time
-        x, y, yaw = self.pose()
-        start_x, start_y, start_yaw = self.cmd_start_pose
-        a = self.args
-
-        if ctype == 'wait':
-            self.send(0.0, 0.0, 0.0)
-            if elapsed >= cmd['duration']:
-                self.current_cmd = None
-
-        elif ctype == 'turn':
-            raw_angle = cmd['target_yaw'] - start_yaw
-            spin = cmd.get('spin', 0.0)
-            if spin > 0 and raw_angle < 0:
-                raw_angle += 2 * math.pi
-            elif spin < 0 and raw_angle > 0:
-                raw_angle -= 2 * math.pi
-            angle = raw_angle if spin else normalize(raw_angle)
-
-            if not cmd.get('logged'):
-                cmd['logged'] = True
-                self.get_logger().info(
-                    f"turn cmd {math.degrees(angle):+.1f} deg (start yaw {math.degrees(start_yaw):+.1f}) "
-                    f"-> target {self.label} yaw {math.degrees(normalize(cmd['target_yaw'])):+.1f} deg")
-
-            T = duration_for_peak(angle, a.turn_speed)
-            if T <= 0:
-                self.current_cmd = None
-                return
-
-            homing = elapsed >= T
-            tau = min(elapsed / T, 1.0)
-            w_ff = 0.0 if homing else (angle / T) * velocity_factor(tau)
-
-            turned = normalize(yaw - start_yaw)
-            if abs(angle) > math.pi:
-                if spin > 0 and turned < 0:
-                    turned += 2 * math.pi
-                elif spin < 0 and turned > 0:
-                    turned -= 2 * math.pi
-
-            expected = angle * position_factor(tau)
-            error = expected - turned if abs(angle) > math.pi else normalize(expected - turned)
-
-            w_correction = self.tracking_correction('turn', error, a.corr_gain, a.corr_damping_gain,
-                                                    a.turn_speed, a.angle_tol)
-            self.send(wz=w_ff + w_correction)
-
-            if homing and abs(error) <= a.angle_tol and abs(self.yaw_rate) < 0.05:
-                self.get_logger().info(f"landed {math.degrees(normalize(cmd['target_yaw'] - yaw)):+.2f} deg off")
-                self.send(0.0, 0.0, 0.0)
-                self.current_cmd = None
-            elif homing and elapsed >= T + a.homing_timeout:
-                self.get_logger().warn(f'turn residual {math.degrees(error):.2f} deg at timeout')
-                self.current_cmd = None
-
-        elif ctype == 'drive':
-            dist = cmd['distance']
-            T = duration_for_peak(dist, a.max_speed)
-            if T <= 0:
-                self.current_cmd = None
-                return
-
-            if not cmd.get('logged'):
-                cmd['logged'] = True
-                tgt_x = start_x + dist * math.cos(start_yaw)
-                tgt_y = start_y + dist * math.sin(start_yaw)
-                self.get_logger().info(
-                    f"drive cmd {dist:+.3f}m (start yaw {math.degrees(start_yaw):+.1f}) "
-                    f"{self.label} ({start_x:+.3f}, {start_y:+.3f}) -> ({tgt_x:+.3f}, {tgt_y:+.3f})")
-
-            homing = elapsed >= T
-            tau = min(elapsed / T, 1.0)
-            v_ff = 0.0 if homing else (dist / T) * velocity_factor(tau)
-
-            dx = x - start_x
-            dy = y - start_y
-            travelled = dx * math.cos(start_yaw) + dy * math.sin(start_yaw)
-            lateral = -dx * math.sin(start_yaw) + dy * math.cos(start_yaw)
-
-            expected = dist * position_factor(tau)
-            error = expected - travelled
-
-            v_correction = self.tracking_correction('drive', error, a.corr_gain, a.corr_damping_gain,
-                                                    a.max_speed, a.position_tol)
-            heading_fix = clamp(HEADING_GAIN*normalize(start_yaw-yaw-
-                          clamp(LATERAL_GAIN*lateral,-LATERAL_CLAMP, LATERAL_CLAMP)),-HEADING_FIX_LIMIT * a.turn_speed,
-                                HEADING_FIX_LIMIT * a.turn_speed)
-            self.send(vx=v_ff + v_correction, wz=heading_fix)
-
-            if homing and abs(error) <= a.position_tol and abs(self.speed) < 0.02:
-                self.get_logger().info(f"landed {error:+.3f}m along, {lateral:+.3f}m lateral off")
-                self.send(0.0, 0.0, 0.0)
-                self.current_cmd = None
-            elif elapsed >= T + a.homing_timeout:
-                self.get_logger().warn(f'drive residual {error:.3f}m at timeout')
-                self.current_cmd = None
-
-        elif ctype == 'move_to':
-            if not cmd.get('logged'):
-                cmd['logged'] = True
-                self.get_logger().info(
-                    f"move_to {self.label} ({start_x:+.3f}, {start_y:+.3f}) -> "
-                    f"({cmd['target_x']:+.3f}, {cmd['target_y']:+.3f})")
-            dx = cmd['target_x'] - start_x
-            dy = cmd['target_y'] - start_y
-            T = max(duration_for_peak(dx, a.max_speed), duration_for_peak(dy, a.max_speed))
-            if T <= 0:
-                self.current_cmd = None
-                return
-
-            homing = elapsed >= T
-            tau = min(elapsed / T, 1.0)
-            vf = 0.0 if homing else velocity_factor(tau)
-            pf = position_factor(tau)
-
-            expected_x, expected_y = start_x + dx * pf, start_y + dy * pf
-            err_x, err_y = expected_x - x, expected_y - y
-
-            vx_corr = self.tracking_correction('move_x', err_x, a.corr_gain, a.corr_damping_gain,
-                                               a.max_speed, a.position_tol)
-            vy_corr = self.tracking_correction('move_y', err_y, a.corr_gain, a.corr_damping_gain,
-                                               a.max_speed, a.position_tol)
-
-            vx_world = (dx / T) * vf + vx_corr
-            vy_world = (dy / T) * vf + vy_corr
-            vx_body, vy_body = world_to_body(vx_world, vy_world, yaw)
-            heading_fix = clamp(HEADING_GAIN * normalize(start_yaw - yaw),
-                                -HEADING_FIX_LIMIT * a.turn_speed, HEADING_FIX_LIMIT * a.turn_speed)
-
-            self.send(vx=vx_body, vy=vy_body, wz=heading_fix)
-
-            if homing and math.hypot(err_x, err_y) <= a.position_tol and abs(self.speed) < 0.02:
-                self.send(0.0, 0.0, 0.0)
-                self.current_cmd = None
-            elif elapsed >= T + a.homing_timeout:
-                self.get_logger().warn(f'move_to residual {math.hypot(err_x, err_y):.3f}m at timeout')
-                self.current_cmd = None
-
-        elif ctype == 'return_home_diff':
-            hx, hy, hyaw = self.home
-            dist = math.hypot(hx - x, hy - y)
-            retries = cmd.get('retries', 0)
-            if dist > a.return_position_tol and retries < a.return_home_max_retries:
-                if not cmd.get('aimed'):
-                    # turn then reevaluate
-                    target_angle = math.atan2(hy - y, hx - x)
-                    self.get_logger().info(
-                        f"return home: {self.label} ({x:+.3f}, {y:+.3f}) -> home ({hx:+.3f}, {hy:+.3f}) "
-                        f"dist {dist:.3f}m angle {math.degrees(target_angle):+.1f} deg")
-                    cmd['aimed'] = True
-                    self.plan.appendleft(cmd)  # requeued
-                    self.plan.appendleft({'type': 'turn', 'target_yaw': target_angle})
-                else:
-                    # distance measured after the turn
-                    self.get_logger().info(
-                        f"return home attempt {retries + 1}: drive {dist:.3f}m toward home ({hx:+.3f}, {hy:+.3f})")
-                    cmd['aimed'] = False
-                    cmd['retries'] = retries + 1
-                    self.plan.appendleft(cmd)
-                    self.plan.appendleft({'type': 'drive', 'distance': dist})
-            else:
-                if dist > a.return_position_tol:
-                    self.get_logger().warn(f'return_home_diff: giving up after {retries} attempts,'
-                                           f'residual distance {dist:.3f}m')
-                self.plan.appendleft({'type': 'turn', 'target_yaw': hyaw})
+        if self.current_cmd.step(self, now):
             self.current_cmd = None
 
 

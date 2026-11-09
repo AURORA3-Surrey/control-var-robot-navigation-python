@@ -21,7 +21,7 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-77}"
 export ROS_STATIC_PEERS="${ROS_STATIC_PEERS:-10.78.24.110}"
 
 cd "$(dirname "$0")" || exit 1
-for f in vicon_grid.py grid_motion.py nav_utils.py; do
+for f in vicon_grid.py grid_motion.py grid_commands.py nav_utils.py; do
     [ -f "$f" ] || { echo "$f not found next to run_grid_loop.sh"; exit 1; }
 done
 
