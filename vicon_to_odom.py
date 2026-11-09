@@ -1,84 +1,20 @@
 import argparse
-import json
 import math
-import os
-import signal
-import sys
-import time
 import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import TwistStamped, PoseStamped
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-
-def yaw_from_quaternion(q):
-    siny = 2.0 * (q.w * q.z + q.x * q.y)
-    cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-    return math.atan2(siny, cosy)
+from nav_utils import (TimedNode, VelocityFilter, add_yaw_offset_arguments, init_ros, normalize,
+                       require_fresh_yaw_offset, resolve_yaw_offset, stop_on_signals, yaw_from_quaternion)
 
 
-def normalize(angle):
-    while angle > math.pi:
-        angle -= 2 * math.pi
-    while angle < -math.pi:
-        angle += 2 * math.pi
-    return angle
-
-
-def load_yaw_offset_file(path):
-    try:
-        with open(path, 'r') as f:
-            data = json.load(f)
-        created = str(data.get('created', ''))[:10] or 'unknown'
-        off = float(data['offset_deg'])
-        if not -360.0 <= off <= 360.0:
-            return None, created
-        return off, created
-    except Exception:
-        return None, 'unknown'
-
-
-def yaw_offset_error(args):
-    if (args.yaw_offset_deg is not None or args.no_yaw_offset_file
-            or args.allow_stale_yaw_offset):
-        return ''
-    if not os.path.isfile(args.yaw_offset_file):
-        return f'no yaw-offset calibration file ({args.yaw_offset_file})'
-    loaded, created = load_yaw_offset_file(args.yaw_offset_file)
-    if loaded is None:
-        return f'unreadable yaw-offset calibration file ({args.yaw_offset_file})'
-    today = time.strftime('%Y-%m-%d')
-    if created != today:
-        return f'yaw-offset calibration dated {created} (today: {today})'
-    return ''
-
-
-class ViconToOdom(Node):
-    # bridges geometry_msgs/PoseStamped (vicon) -> nav_msgs/Odometry
+class ViconToOdom(TimedNode):
     def __init__(self, args):
         super().__init__('vicon_to_odom')
         self.a = args
-        if args.yaw_offset_deg is not None:
-            src = 'command line'
-        elif args.no_yaw_offset_file:
-            args.yaw_offset_deg = 0.0
-            src = 'default 0 (--no-yaw-offset-file)'
-        elif os.path.isfile(args.yaw_offset_file):
-            loaded, created = load_yaw_offset_file(args.yaw_offset_file)
-            if loaded is None:
-                args.yaw_offset_deg = 0.0
-                src = f'default 0 (unreadable calibration file: {args.yaw_offset_file})'
-            else:
-                args.yaw_offset_deg = loaded
-                src = f'calibration file: {args.yaw_offset_file} (dated {created})'
-        else:
-            args.yaw_offset_deg = 0.0
-            src = 'default 0 (no calibration file run vicon_yaw_calibration.py once)'
-        self.get_logger().info(f'vicon yaw offset: {args.yaw_offset_deg:+.1f} deg ({src})')
-        self.prev = None   # (x, y, yaw, stamp) of previous vicon sample
-        self.v = 0.0
-        self.wz = 0.0
+        self.yaw_offset_deg = resolve_yaw_offset(self, args, args.yaw_offset_deg)
+        self.velocity = VelocityFilter(args.vel_filter_tau)
         qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(PoseStamped, args.vicon_topic, self.vicon_cb, qos)
         self.pub = self.create_publisher(Odometry, args.odom_topic, qos)
@@ -89,23 +25,11 @@ class ViconToOdom(Node):
         y = msg.pose.position.y
         yaw = yaw_from_quaternion(msg.pose.orientation)
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-
-        prev = self.prev
-        if prev is not None and 0.0 < stamp - prev[3] < 0.2:
-            dt = stamp - prev[3]
-            v_raw = math.hypot(x - prev[0], y - prev[1]) / dt
-            w_raw = normalize(yaw - prev[2]) / dt
-            alpha = dt / (self.a.vel_filter_tau + dt)
-            self.v = alpha * v_raw + (1.0 - alpha) * self.v
-            self.wz = alpha * w_raw + (1.0 - alpha) * self.wz
-        else:
-            self.v = 0.0
-            self.wz = 0.0
-        self.prev = (x, y, yaw, stamp)
+        self.velocity.update(x, y, yaw, stamp)
 
         # optional rigid-body alignment (uniform scale + yaw offset about world Z)
         s = self.a.scale
-        off = math.radians(self.a.yaw_offset_deg)
+        off = math.radians(self.yaw_offset_deg)
         out = Odometry()
         out.header.stamp = msg.header.stamp
         out.header.frame_id = msg.header.frame_id
@@ -121,8 +45,8 @@ class ViconToOdom(Node):
             out.pose.pose.position.x = s * x
             out.pose.pose.position.y = s * y
             out.pose.pose.orientation = msg.pose.orientation
-        out.twist.twist.linear.x = self.v
-        out.twist.twist.angular.z = self.wz
+        out.twist.twist.linear.x = self.velocity.v
+        out.twist.twist.angular.z = self.velocity.wz
         self.pub.publish(out)
 
 
@@ -131,36 +55,17 @@ def parse_args():
     p.add_argument('--vicon-topic', default='/vicon/Turtlebot3/Turtlebot3')
     p.add_argument('--odom-topic', default='/vicon/odom')
     p.add_argument('--vel-filter-tau', type=float, default=0.08)
-    p.add_argument('--yaw-offset-deg', type=float, default=None)
-    p.add_argument('--yaw-offset-file', default=os.path.join(os.path.dirname(os.path.abspath(__file__)),'vicon_yaw_offset.json'))
-    p.add_argument('--no-yaw-offset-file', action='store_true')
-    p.add_argument('--allow-stale-yaw-offset', action='store_true')
+    add_yaw_offset_arguments(p, '--yaw-offset-deg')
     p.add_argument('--scale', type=float, default=1.0)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    gate = yaw_offset_error(args)
-    if gate:
-        print(f'ABORT: {gate}')
-        print('the yaw offset must be calibrated the SAME DAY before any run')
-        print('fix: python3 vicon_yaw_calibration.py then re-run this script')
-        print('(bypass: --allow-stale-yaw-offset')
-        print('--vicon-yaw-offset-deg, or --no-yaw-offset-file)')
-        sys.exit(1)
-    try:
-        from rclpy.signals import SignalHandlerOptions
-        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    except (ImportError, TypeError):
-        rclpy.init()
+    require_fresh_yaw_offset(args, args.yaw_offset_deg)
+    init_ros()
     node = ViconToOdom(args)
-
-    def stop_on_signal(signum, frame):
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGINT, stop_on_signal)
-    signal.signal(signal.SIGTERM, stop_on_signal)
+    stop_on_signals()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

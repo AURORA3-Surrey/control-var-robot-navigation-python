@@ -1,36 +1,20 @@
 import argparse
 import json
 import math
-import os
-import signal
 import sys
 import time
 import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import TwistStamped, PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_srvs.srv import SetBool
 
-
-def normalize(a):
-    return math.atan2(math.sin(a), math.cos(a))
-
-
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
-def yaw_from_quaternion(q):
-    siny = 2.0 * (q.w * q.z + q.x * q.y)
-    cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-    return math.atan2(siny, cosy)
-
+from nav_utils import (DEFAULT_YAW_OFFSET_FILE, TimedNode, TwistSender, call_service, clamp, ignore_stop_signals,
+                       init_ros, normalize, send_zero_burst, stop_on_signals, yaw_from_quaternion)
 
 class SafetyAbort(RuntimeError):
     pass
 
-
-class YawCalibNode(Node):
+class YawCalibNode(TimedNode):
     # measures the yaw offset by moving forward and watching which world direction the robot moves
     # (measured offset only used for the return trip)
 
@@ -46,10 +30,8 @@ class YawCalibNode(Node):
         self.pub = self.create_publisher(TwistStamped, args.cmd_vel_topic, qos)
         self.create_subscription(PoseStamped, args.vicon_topic, self.vicon_cb, qos)
         self.motor_client = self.create_client(SetBool, args.motor_power_service)
-
-        self.last_vx = self.last_wz = 0.0
-        self.last_send_time = None
         self.timer_period = 1.0 / self.a.rate
+        self.sender = TwistSender(self, self.pub, args.accel_lin, args.accel_ang, self.timer_period)
 
     def vicon_cb(self, msg):
         self.x = msg.pose.position.x
@@ -61,24 +43,8 @@ class YawCalibNode(Node):
     def pose(self):
         return self.x, self.y, self.yaw
 
-    def get_time_sec(self):
-        return self.get_clock().now().nanoseconds / 1e9
-
     def send(self, vx=0.0, wz=0.0):
-        now = self.get_time_sec()
-        dt = (now - self.last_send_time) if self.last_send_time else self.timer_period
-        self.last_send_time = now
-        max_dv = self.a.accel_lin * dt
-        max_dw = self.a.accel_ang * dt
-        vx = clamp(vx, self.last_vx - max_dv, self.last_vx + max_dv)
-        wz = clamp(wz, self.last_wz - max_dw, self.last_wz + max_dw)
-        self.last_vx, self.last_wz = vx, wz
-
-        msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.twist.linear.x = float(vx)
-        msg.twist.angular.z = float(wz)
-        self.pub.publish(msg)
+        self.sender.send(vx, None, wz)
 
     def spin_tick(self):
         rclpy.spin_once(self, timeout_sec=0.005)
@@ -115,27 +81,12 @@ def wait_stationary(node, timeout=10.0):
 
 
 def set_motor_power(node, on):
-    if not node.motor_client.wait_for_service(timeout_sec=3.0):
+    ok = call_service(node, node.motor_client, SetBool.Request(data=on), 3.0, 3.0)
+    if ok is None:
         node.get_logger().warn('motor_power service not available continuing')
         return False
-    fut = node.motor_client.call_async(SetBool.Request(data=on))
-    rclpy.spin_until_future_complete(node, fut, timeout_sec=3.0)
-    ok = fut.done() and fut.result() is not None and fut.result().success
     node.get_logger().info(f'motor power {"ON" if on else "OFF"} {ok}')
     return ok
-
-
-def zero_burst(node, n=10):
-    sent = 0
-    for _ in range(n):
-        try:
-            node.send(0.0, 0.0)
-            sent += 1
-            rclpy.spin_once(node, timeout_sec=0.01)
-        except Exception:
-            break
-        time.sleep(0.02)
-    node.get_logger().info(f'stop: {sent}/{n} zero commands published')
 
 
 def move_forward(node):
@@ -232,31 +183,22 @@ def parse_args():
     p.add_argument('--accel-ang', type=float, default=1.0)
     p.add_argument('--keep-motors-on', action='store_true')
     p.add_argument('--no-save', action='store_true')
-    p.add_argument('--save-file', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vicon_yaw_offset.json'))
+    p.add_argument('--save-file', default=DEFAULT_YAW_OFFSET_FILE)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    try:
-        from rclpy.signals import SignalHandlerOptions
-        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    except (ImportError, TypeError):
-        rclpy.init()
+    init_ros()
     node = YawCalibNode(args)
-
-    def stop_on_signal(signum, frame):
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGINT, stop_on_signal)
-    signal.signal(signal.SIGTERM, stop_on_signal)
+    stop_on_signals()
 
     exit_code = 1
     try:
         wait_for_pose(node)
         wait_stationary(node)
         set_motor_power(node, True)
-        zero_burst(node, 5)
+        send_zero_burst(node, 5, 0.01)
 
         x0, y0, yaw0, xe, ye, yawe, disp = move_forward(node)
         bearing, yaw_mean, off_deg, snap, residual = measure_offset(x0, y0, yaw0, xe, ye, yawe)
@@ -319,10 +261,9 @@ def main():
         node.get_logger().error(f'error: {exc}')
         raise
     finally:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        node.last_vx = node.last_wz = 0.0
-        zero_burst(node, 10)
+        ignore_stop_signals()
+        node.sender.reset()
+        send_zero_burst(node, 10, 0.01)
         if not args.keep_motors_on:
             try:
                 set_motor_power(node, False)
