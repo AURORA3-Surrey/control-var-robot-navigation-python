@@ -168,9 +168,9 @@ class GridMotionNode(TimedNode):
 
         enabled = call_service(self, self.motor_client, SetBool.Request(data=True), 3.0, 5.0)
         if enabled is None:
-            self.get_logger().warn('motor power service not found')
+            self.get_logger().warning('motor power service not found')
         elif not enabled:
-            self.get_logger().warn('motor power enable failed or timed out')
+            self.get_logger().warning('motor power enable failed or timed out')
 
         self.zero_odometry()
 
@@ -233,7 +233,7 @@ def run_grid(args, node_class):
             rclpy.spin_once(node, timeout_sec=0.1)
 
     except KeyboardInterrupt:
-        node.get_logger().warn(node.stop_message)
+        node.get_logger().warning(node.stop_message)
     except Exception as exc:
         node.get_logger().error(f'{exc}')
         raise

@@ -52,7 +52,7 @@ class ViconToOdom(TimedNode):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--vicon-topic', default='/vicon/Turtlebot3/Turtlebot3')
+    p.add_argument('--vicon-topic', default='/vicon/Dingo/Dingo')
     p.add_argument('--odom-topic', default='/vicon/odom')
     p.add_argument('--vel-filter-tau', type=float, default=0.08)
     add_yaw_offset_arguments(p, '--yaw-offset-deg')

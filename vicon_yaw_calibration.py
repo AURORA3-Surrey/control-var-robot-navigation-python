@@ -83,7 +83,7 @@ def wait_stationary(node, timeout=10.0):
 def set_motor_power(node, on):
     ok = call_service(node, node.motor_client, SetBool.Request(data=on), 3.0, 3.0)
     if ok is None:
-        node.get_logger().warn('motor_power service not available continuing')
+        node.get_logger().warning('motor_power service not available continuing')
         return False
     node.get_logger().info(f'motor power {"ON" if on else "OFF"} {ok}')
     return ok
@@ -163,7 +163,7 @@ def return_home(node, x0, y0, yaw0):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--vicon-topic', default='/vicon/Turtlebot3/Turtlebot3')
+    p.add_argument('--vicon-topic', default='/vicon/Dingo/Dingo')
     p.add_argument('--cmd-vel-topic', default='/cmd_vel')
     p.add_argument('--motor-power-service', default='/motor_power')
     p.add_argument('--movement-speed', type=float, default=0.05)
@@ -208,33 +208,35 @@ def main():
             f'movement: {disp:.3f} m, world bearing {math.degrees(bearing):+.1f} deg, '
             f'raw vicon yaw mean {math.degrees(yaw_mean):+.1f} deg')
         node.get_logger().info(
-            f'MEASURED yaw offset: {off_deg:+.1f} deg snapped {snap:+.0f} deg '
+            f'measured yaw offset: {off_deg:+.1f} deg snapped {snap:+.0f} deg '
             f'(residual {residual:+.1f} deg)')
         if abs(residual) > 20.0:
-            node.get_logger().warn('residual > 20 deg: movement was not clean')
+            node.get_logger().warning('residual > 20 deg: movement was not clean')
 
         if snap == 0.0:
-            node.get_logger().info('RESULT: Vicon +x matches robot forward (no offset needed)')
+            node.get_logger().info('vicon +x matches robot forward (no offset needed)')
         elif snap == 180.0:
-            node.get_logger().info('RESULT: Vicon +x faces the robot REAR')
+            node.get_logger().info('vicon +x faces the robot rear')
         else:
-            node.get_logger().warn('RESULT: rigid body is rotated around 90 deg, recreate the rigid body in Tracker')
+            node.get_logger().warning(
+                'rigid body is rotated around 90 deg, recreate the rigid body in Tracker')
 
-        node.get_logger().info(f'RECOMMENDED: --vicon-yaw-offset-deg {snap:+.0f}')
-        node.get_logger().info(f'YAW_OFFSET_RESULT: {snap:+.0f}')
+        node.get_logger().info(f'recommended --vicon-yaw-offset-deg {snap:+.0f}')
+        node.get_logger().info(f'yaw_offset_result: {snap:+.0f}')
 
         fx, fy, fyaw = return_home(node, x0, y0, yaw0)
         dx, dy = fx - x0, fy - y0
         dyaw = math.degrees(normalize(fyaw - yaw0))
         dist = math.hypot(dx, dy)
         node.get_logger().info(
-            f'RETURN: at ({fx:+.3f}, {fy:+.3f}) | dx={dx:+.3f}m dy={dy:+.3f}m '
+            f'return at ({fx:+.3f}, {fy:+.3f}) | dx={dx:+.3f}m dy={dy:+.3f}m '
             f'dyaw={dyaw:+.2f} deg')
         returned = dist <= 0.04 and abs(dyaw) <= 5.0
         if returned:
-            node.get_logger().info('RETURN OK measured offset validated')
+            node.get_logger().info('return ok measured offset validated')
         else:
-            node.get_logger().warn('return imperfect reposition the robot by hand (measurement still valid)')
+            node.get_logger().warning(
+                'return imperfect reposition the robot by hand (measurement still valid)')
 
         if not args.no_save:
             payload = {
@@ -252,13 +254,13 @@ def main():
         exit_code = 0 if returned else 2
 
     except SafetyAbort as exc:
-        node.get_logger().error(f'ABORT: {exc}')
+        node.get_logger().error(f'{exc}')
         exit_code = 1
     except KeyboardInterrupt:
-        node.get_logger().warn('stopping robot')
+        node.get_logger().warning('stopping robot')
         exit_code = 1
     except Exception as exc:
-        node.get_logger().error(f'error: {exc}')
+        node.get_logger().error(f'{exc}')
         raise
     finally:
         ignore_stop_signals()

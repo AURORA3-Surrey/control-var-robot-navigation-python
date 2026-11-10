@@ -171,7 +171,7 @@ class Turn(Command):
             node.send(0.0, 0.0, 0.0)
             return True
         if homing and elapsed >= T + a.homing_timeout:
-            node.get_logger().warn(f'turn residual {math.degrees(error):.2f} deg at timeout')
+            node.get_logger().warning(f'turn residual {math.degrees(error):.2f} deg at timeout')
             return True
         return False
 
@@ -225,7 +225,7 @@ class Drive(Command):
             node.send(0.0, 0.0, 0.0)
             return True
         if elapsed >= T + a.homing_timeout:
-            node.get_logger().warn(f'drive residual {error:.3f}m at timeout')
+            node.get_logger().warning(f'drive residual {error:.3f}m at timeout')
             return True
         return False
 
@@ -278,7 +278,7 @@ class MoveTo(Command):
             node.send(0.0, 0.0, 0.0)
             return True
         if elapsed >= T + a.homing_timeout:
-            node.get_logger().warn(f'move_to residual {math.hypot(err_x, err_y):.3f}m at timeout')
+            node.get_logger().warning(f'move_to residual {math.hypot(err_x, err_y):.3f}m at timeout')
             return True
         return False
 
@@ -317,7 +317,7 @@ class ReturnHomeDiff(Command):
                 node.plan.appendleft(Drive(dist))
         else:
             if dist > a.return_position_tol:
-                node.get_logger().warn(f'return_home_diff: giving up after {retries} attempts,'
+                node.get_logger().warning(f'return_home_diff: giving up after {retries} attempts,'
                                        f' residual distance {dist:.3f}m')
             node.plan.appendleft(Turn(hyaw))
         return True

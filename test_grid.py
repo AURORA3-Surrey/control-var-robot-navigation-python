@@ -39,9 +39,9 @@ class OdomGridNode(GridMotionNode):
         # reset the odometry
         reset = call_service(self, self.reset_client, Trigger.Request(), 2.0, 5.0)
         if reset is None:
-            self.get_logger().warn('reset odom service not found')
+            self.get_logger().warning('reset odom service not found')
         elif not reset:
-            self.get_logger().warn('reset odometry failed or timed out')
+            self.get_logger().warning('reset odometry failed or timed out')
         else:
             deadline = self.get_time_sec() + 2.0
             settled = False
@@ -51,7 +51,7 @@ class OdomGridNode(GridMotionNode):
                     settled = True
                     break
             if not settled:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f'odometry not zero after reset: ({self.x:.3f}, {self.y:.3f}, '
                     f'{math.degrees(self.yaw):+.2f} deg)')
 

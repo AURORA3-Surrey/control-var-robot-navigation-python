@@ -30,7 +30,8 @@ def clamp(v, low, high):
     return max(low, min(high, v))
 
 
-DEFAULT_YAW_OFFSET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vicon_yaw_offset.json')
+DEFAULT_YAW_OFFSET_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'vicon_yaw_offset.json')
 
 def add_yaw_offset_arguments(parser, offset_flag):
     parser.add_argument(offset_flag, type=float, default=None)
@@ -60,8 +61,12 @@ def read_yaw_offset(args, cli_offset_deg):
         return 0.0, 'default 0 (--no-yaw-offset-file)', ''
     path = args.yaw_offset_file
     if not os.path.isfile(path):
-        return 0.0, f'default 0, no offset calibration file ({path})'
+        return (0.0, f'default 0, no offset calibration file ({path})',
+                f'no offset calibration file ({path})')
     offset, created = load_yaw_offset_file(path)
+    if offset is None:
+        return (0.0, f'default 0, unreadable calibration file ({path})',
+                f'unreadable offset calibration file ({path})')
     today = time.strftime('%Y-%m-%d')
     stale = '' if created == today else f'offset calibration dated {created} ({today})'
     return offset, f'calibration file: {path} (dated {created})', stale
@@ -72,7 +77,8 @@ def require_fresh_yaw_offset(args, cli_offset_deg):
     if refusal and not args.allow_stale_yaw_offset:
         print(f'{refusal}')
         print('python3 vicon_yaw_calibration.py then re-run this script')
-        print('(bypass with --allow-stale-yaw-offset, --vicon-yaw-offset-deg, or --no-yaw-offset-file)')
+        print('(bypass with --allow-stale-yaw-offset, --vicon-yaw-offset-deg, '
+              'or --no-yaw-offset-file)')
         sys.exit(1)
 
 
