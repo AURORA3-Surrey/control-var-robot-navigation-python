@@ -6,7 +6,8 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from nav_utils import (TimedNode, VelocityFilter, add_yaw_offset_arguments, init_ros, normalize,
-                       require_fresh_yaw_offset, resolve_yaw_offset, stop_on_signals, yaw_from_quaternion)
+                       require_fresh_yaw_offset, resolve_yaw_offset, stop_on_signals,
+                       yaw_from_quaternion)
 
 
 class ViconToOdom(TimedNode):
@@ -15,7 +16,8 @@ class ViconToOdom(TimedNode):
         self.a = args
         self.yaw_offset_deg = resolve_yaw_offset(self, args, args.yaw_offset_deg)
         self.velocity = VelocityFilter(args.vel_filter_tau)
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(PoseStamped, args.vicon_topic, self.vicon_cb, qos)
         self.pub = self.create_publisher(Odometry, args.odom_topic, qos)
         self.get_logger().info(f'{args.vicon_topic} -> {args.odom_topic}')

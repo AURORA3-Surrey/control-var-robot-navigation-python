@@ -6,8 +6,8 @@ import argparse
 import math
 from geometry_msgs.msg import PoseStamped
 from grid_motion import GridMotionNode, add_grid_arguments, run_grid
-from nav_utils import (VelocityFilter, add_yaw_offset_arguments, normalize, require_fresh_yaw_offset,
-                       resolve_yaw_offset, yaw_from_quaternion)
+from nav_utils import (VelocityFilter, add_yaw_offset_arguments, normalize,
+                       require_fresh_yaw_offset, resolve_yaw_offset, yaw_from_quaternion)
 
 
 class ViconGridNode(GridMotionNode):
@@ -26,9 +26,11 @@ class ViconGridNode(GridMotionNode):
     def on_pose(self, msg):
         x = msg.pose.position.x
         y = msg.pose.position.y
-        yaw = normalize(yaw_from_quaternion(msg.pose.orientation) + math.radians(self.yaw_offset_deg))
+        yaw = normalize(
+            yaw_from_quaternion(msg.pose.orientation) + math.radians(self.yaw_offset_deg))
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        self.velocity.update(x, y, yaw, stamp)  # velocity from filtered finite differences of vicon samples
+        # velocity from filtered finite differences of vicon samples
+        self.velocity.update(x, y, yaw, stamp)
         self.speed = self.velocity.v
         self.yaw_rate = self.velocity.wz
         self.store_pose(x, y, yaw, stamp)
@@ -42,7 +44,8 @@ class ViconGridNode(GridMotionNode):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    add_grid_arguments(p, position_tol=0.005, return_position_tol=0.01, angle_tol=0.0087, homing_timeout=3.0)
+    add_grid_arguments(
+        p, position_tol=0.005, return_position_tol=0.01, angle_tol=0.0087, homing_timeout=3.0)
     p.add_argument('--vicon-topic', default='/vicon/Dingo/Dingo')
     p.add_argument('--vicon-timeout', type=float, default=0.5)
     p.add_argument('--vel-filter-tau', type=float, default=0.08)

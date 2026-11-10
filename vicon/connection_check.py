@@ -26,7 +26,8 @@ class ViconCheck(Node):
         self.intervals = 0
         self.stamp_sum = self.arrival_sum = 0.0
         self.max_stamp_gap = self.max_arrival_gap = self.max_lag = self.max_quat_error = 0.0
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(PoseStamped, args.vicon_topic, self.cb, qos)
 
     def cb(self, msg):
@@ -70,7 +71,7 @@ class ViconCheck(Node):
     def report(self):
         print(f'\nVicon: {self.a.vicon_topic} | frame: {self.frame_id} | messages: {self.count}')
         if not self.count:
-            print('FAIL: no messages received\n')
+            print('fail: no messages received\n')
             return False
 
         elapsed = self.last_recv - self.first_recv
@@ -81,17 +82,32 @@ class ViconCheck(Node):
         arrival_gap = max(self.max_arrival_gap, silence)
         displacement = math.dist(self.first_pos, self.last_pos)
 
-        print(f'Rate: {rate:.1f} Hz | arrival: {arrival_mean * 1000:.1f} ms mean, {self.max_arrival_gap * 1000:.1f} ms max')
-        print(f'Stamps: {stamp_mean * 1000:.1f} ms mean, {self.max_stamp_gap * 1000:.1f} ms max positive')
-        print(f'Position: ({self.last_pos[0]:+.3f}, {self.last_pos[1]:+.3f}) m | yaw: {math.degrees(self.last_yaw):+.1f} deg')
+        print(f'Rate: {rate:.1f} Hz | arrival: {arrival_mean * 1000:.1f} ms mean, '
+              f'{self.max_arrival_gap * 1000:.1f} ms max')
+        print(f'Stamps: {stamp_mean * 1000:.1f} ms mean, '
+              f'{self.max_stamp_gap * 1000:.1f} ms max positive')
+        print(f'Position: ({self.last_pos[0]:+.3f}, {self.last_pos[1]:+.3f}) m | '
+              f'yaw: {math.degrees(self.last_yaw):+.1f} deg')
         print(f'Displacement: {displacement * 1000:.1f} mm')
 
         checks = [
-            (rate >= self.a.min_rate, f'rate below {self.a.min_rate:.1f} Hz', f'rate above {self.a.min_rate:.1f} Hz'),
-            (self.intervals > 0 and self.bad_stamps == 0 and self.max_stamp_gap <= 0.2, f'timestamp check failed: {self.bad_stamps} non-increasing intervals, max gap {self.max_stamp_gap:.3f} s', 'timestamps increase and gaps are within 0.2 s'),
-            (self.intervals > 0 and arrival_gap <= 0.5, f'arrival check failed: {self.intervals} intervals, gap or silence {arrival_gap:.3f} s', 'message arrivals within limit'),
-            (self.bad_pose == 0, f'{self.bad_pose} invalid positions or yaw values', 'positions and yaw are finite'),
-            (self.bad_quat == 0, f'{self.bad_quat} invalid quaternions; max norm error {self.max_quat_error:.4f}', 'quaternion norms within tolerance'),
+            (rate >= self.a.min_rate,
+             f'rate below {self.a.min_rate:.1f} Hz',
+             f'rate above {self.a.min_rate:.1f} Hz'),
+            (self.intervals > 0 and self.bad_stamps == 0 and self.max_stamp_gap <= 0.2,
+             f'timestamp check failed: {self.bad_stamps} non-increasing intervals, '
+             f'max gap {self.max_stamp_gap:.3f} s',
+             'timestamps increase and gaps are within 0.2 s'),
+            (self.intervals > 0 and arrival_gap <= 0.5,
+             f'arrival check failed: {self.intervals} intervals, '
+             f'gap or silence {arrival_gap:.3f} s',
+             'message arrivals within limit'),
+            (self.bad_pose == 0,
+             f'{self.bad_pose} invalid positions or yaw values',
+             'positions and yaw are finite'),
+            (self.bad_quat == 0,
+             f'{self.bad_quat} invalid quaternions; max norm error {self.max_quat_error:.4f}',
+             'quaternion norms within tolerance'),
         ]
         failures = [f for passed, f, p in checks if not passed]
         passes = [p for passed, f, p in checks if passed]
@@ -106,7 +122,9 @@ class ViconCheck(Node):
         elif displacement < 0.001:
             warnings.append('pose remained static; movement was not tested')
 
-        for title, items, prefix in [('FAILURES', failures, 'FAIL'), ('PASSES', passes, 'PASS'), ('WARNINGS', warnings, 'WARN')]:
+        for title, items, prefix in [('failures', failures, 'fail'),
+                                     ('passes', passes, 'pass'),
+                                     ('warnings', warnings, 'warn')]:
             print(f'\n{title}')
             for item in items:
                 print(f'{prefix}: {item}')
@@ -114,9 +132,9 @@ class ViconCheck(Node):
                 print('none')
 
         if failures:
-            print('\nRESULT: FAIL')
+            print('\nresult: fail')
             return False
-        print('\nRESULT: PASS')
+        print('\nresult: pass')
         return True
     
 

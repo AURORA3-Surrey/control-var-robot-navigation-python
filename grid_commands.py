@@ -1,7 +1,7 @@
 # motion commands for grid runners, commands follows a minimum-jerk position profile
 # step(node, now) is called once per control tick and returns True when done
-# node is the GridMotionNode which provides 'args', 'pose()', 'send()', 'tracking_correction()', 'label'
-# if 'vicon' or 'odom', 'speed', 'yaw_rate', 'home' and the 'plan' queue
+# node is the GridMotionNode which provides 'args', 'pose()', 'send()', 'tracking_correction()',
+# 'label' if 'vicon' or 'odom', 'speed', 'yaw_rate', 'home' and the 'plan' queue
 
 from nav_utils import clamp, normalize
 import math
@@ -142,7 +142,8 @@ class Turn(Command):
         if not self.logged:
             self.logged = True
             node.get_logger().info(
-                f"turn cmd {math.degrees(angle):+.1f} deg (start yaw {math.degrees(start_yaw):+.1f}) "
+                f"turn cmd {math.degrees(angle):+.1f} deg "
+                f"(start yaw {math.degrees(start_yaw):+.1f}) "
                 f"-> target {node.label} yaw {math.degrees(normalize(self.target_yaw)):+.1f} deg")
 
         T = duration_for_peak(angle, a.turn_speed)
@@ -167,7 +168,8 @@ class Turn(Command):
         node.send(wz=w_ff + w_correction)
 
         if homing and abs(error) <= a.angle_tol and abs(node.yaw_rate) < 0.05:
-            node.get_logger().info(f"landed {math.degrees(normalize(self.target_yaw - yaw)):+.2f} deg off")
+            node.get_logger().info(
+                f"landed {math.degrees(normalize(self.target_yaw - yaw)):+.2f} deg off")
             node.send(0.0, 0.0, 0.0)
             return True
         if homing and elapsed >= T + a.homing_timeout:
@@ -278,7 +280,8 @@ class MoveTo(Command):
             node.send(0.0, 0.0, 0.0)
             return True
         if elapsed >= T + a.homing_timeout:
-            node.get_logger().warning(f'move_to residual {math.hypot(err_x, err_y):.3f}m at timeout')
+            node.get_logger().warning(
+                f'move_to residual {math.hypot(err_x, err_y):.3f}m at timeout')
             return True
         return False
 
@@ -302,7 +305,8 @@ class ReturnHomeDiff(Command):
                 # turn to the current angle to home then reevaluate
                 target_angle = math.atan2(hy - y, hx - x)
                 node.get_logger().info(
-                    f"return home: {node.label} ({x:+.3f}, {y:+.3f}) -> home ({hx:+.3f}, {hy:+.3f}) "
+                    f"return home: {node.label} ({x:+.3f}, {y:+.3f}) "
+                    f"-> home ({hx:+.3f}, {hy:+.3f}) "
                     f"dist {dist:.3f}m angle {math.degrees(target_angle):+.1f} deg")
                 self.aimed = True
                 node.plan.appendleft(self)  # requeued
@@ -310,7 +314,8 @@ class ReturnHomeDiff(Command):
             else:
                 # distance measured after the turn
                 node.get_logger().info(
-                    f"return home attempt {retries + 1}: drive {dist:.3f}m toward home ({hx:+.3f}, {hy:+.3f})")
+                    f"return home attempt {retries + 1}: drive {dist:.3f}m "
+                    f"toward home ({hx:+.3f}, {hy:+.3f})")
                 self.aimed = False
                 self.retries = retries + 1
                 node.plan.appendleft(self)

@@ -8,8 +8,9 @@ from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_srvs.srv import SetBool
 
-from nav_utils import (DEFAULT_YAW_OFFSET_FILE, TimedNode, TwistSender, call_service, clamp, ignore_stop_signals,
-                       init_ros, normalize, send_zero_burst, stop_on_signals, yaw_from_quaternion)
+from nav_utils import (DEFAULT_YAW_OFFSET_FILE, TimedNode, TwistSender, call_service, clamp,
+                       ignore_stop_signals, init_ros, normalize, send_zero_burst, stop_on_signals,
+                       yaw_from_quaternion)
 
 class SafetyAbort(RuntimeError):
     pass
@@ -26,12 +27,14 @@ class YawCalibNode(TimedNode):
         self.last_pose_time = None
         self.off_rad = 0.0  # measured offset set after movement
 
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.pub = self.create_publisher(TwistStamped, args.cmd_vel_topic, qos)
         self.create_subscription(PoseStamped, args.vicon_topic, self.vicon_cb, qos)
         self.motor_client = self.create_client(SetBool, args.motor_power_service)
         self.timer_period = 1.0 / self.a.rate
-        self.sender = TwistSender(self, self.pub, args.accel_lin, args.accel_ang, self.timer_period)
+        self.sender = TwistSender(
+            self, self.pub, args.accel_lin, args.accel_ang, self.timer_period)
 
     def vicon_cb(self, msg):
         self.x = msg.pose.position.x
@@ -48,7 +51,8 @@ class YawCalibNode(TimedNode):
 
     def spin_tick(self):
         rclpy.spin_once(self, timeout_sec=0.005)
-        if self.last_pose_time is not None and time.time() - self.last_pose_time > self.a.vicon_timeout:
+        if (self.last_pose_time is not None
+                and time.time() - self.last_pose_time > self.a.vicon_timeout):
             raise SafetyAbort(f'vicon stream stale for {time.time() - self.last_pose_time:.1f}s')
 
 
@@ -112,7 +116,8 @@ def move_forward(node):
     x, y, yaw = node.pose()
     disp = math.hypot(x - x0, y - y0)
     if disp < a.min_displacement:
-        raise SafetyAbort(f'robot moved only {disp:.3f} m (< {a.min_displacement:.2f} m min) motors enabled?')
+        raise SafetyAbort(
+            f'robot moved only {disp:.3f} m (< {a.min_displacement:.2f} m min) motors enabled?')
     return x0, y0, yaw0, x, y, yaw, disp
 
 
