@@ -1,5 +1,5 @@
 #!/bin/bash
-# LOOP FOR 15/09/26 SOFT OPENING VAR DEMO
+# LOOP FOR VAR DEMO
 # do chmod +x run_grid_loop.sh once and run with ./run_grid_loop.sh
 # 3x3 grid on the 3.0 x 0.8 m tape rectangle (start the robot on a corner of the tape with 3m side on its right)
 # to change topic --vicon-topic /vicon/Other/Name
@@ -56,8 +56,8 @@ cleanup() {
     if [ "${FINAL_STOP_PUB:-1}" = "1" ] && command -v ros2 >/dev/null 2>&1; then
         echo "loop: publishing 4x zero /cmd_vel from the shell as final stop..."
         timeout 10 ros2 topic pub --times 4 --rate 2 /cmd_vel \
-            geometry_msgs/msg/Twist \
-            '{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}' \
+            geometry_msgs/msg/TwistStamped \
+            '{header: auto, twist: {linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}}' \
             >/dev/null 2>&1 || true
     fi
     echo "loop: stopped after ${run_count} run(s)"
