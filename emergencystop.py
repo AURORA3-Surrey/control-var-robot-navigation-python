@@ -11,7 +11,8 @@ class Stop(Node):
     # zero cmd_vel burst (run this from a second SSH window)
     def __init__(self, args):
         super().__init__('stop')
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.pub = self.create_publisher(TwistStamped, args.cmd_vel_topic, qos)
         self.client = self.create_client(SetBool, args.motor_power_service)
         self.get_logger().info(f'stop armed: {args.cmd_vel_topic} + {args.motor_power_service}')
@@ -48,9 +49,10 @@ def main():
                 rclpy.spin_once(node, timeout_sec=0.02)
                 time.sleep(0.02)
         except KeyboardInterrupt:
-            node.get_logger().warn(
+            node.get_logger().warning(
                 f'stop: interrupted after {sent}/{args.bursts} zeros, cutting motor power')
-        node.get_logger().info(f'stop: {sent}/{args.bursts} zero commands published on {args.cmd_vel_topic}')
+        node.get_logger().info(
+            f'stop: {sent}/{args.bursts} zero commands published on {args.cmd_vel_topic}')
 
         if args.keep_motors_on:
             node.get_logger().info('stop: motors enabled (--keep-motors-on)')
@@ -60,11 +62,11 @@ def main():
             if future.done() and future.result() is not None and future.result().success:
                 node.get_logger().info('stop: motor power OFF')
             else:
-                node.get_logger().warn('stop: motor power off failed')
+                node.get_logger().warning('stop: motor power off failed')
         else:
-            node.get_logger().warn('stop: /motor_power service not found')
+            node.get_logger().warning('stop: /motor_power service not found')
     except KeyboardInterrupt:
-        node.get_logger().warn('stop: interrupted, motor power state unconfirmed')
+        node.get_logger().warning('stop: interrupted, motor power state unconfirmed')
     finally:
         if rclpy.ok():
             node.destroy_node()
