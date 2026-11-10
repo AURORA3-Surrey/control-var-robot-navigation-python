@@ -1,4 +1,4 @@
-# grid runner shared by vicon_grid and test_grid (wheel odom)
+# grid runner shared by vicon_grid and odom_grid (wheel odom)
 # initialize(), then start_control_loop() plans grid, control_tick() runs one command at a time
 
 import math
@@ -7,15 +7,17 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_srvs.srv import SetBool
-from nav_utils import (TimedNode, TwistSender, call_service, ignore_stop_signals, init_ros, normalize,
-                       send_zero_burst, stop_on_signals)
+from nav_utils import (TimedNode, TwistSender, call_service, ignore_stop_signals, init_ros,
+                       normalize, send_zero_burst, stop_on_signals)
 from grid_commands import Drive, MoveTo, ReturnHomeDiff, TrackingCorrection, Turn, Wait
 
 
 def add_grid_arguments(p, *, position_tol, return_position_tol, angle_tol, homing_timeout):
     p.add_argument('--platform', choices=['diff', 'omni'], default='diff')
-    p.add_argument('--grid-size', type=int, default=4)  # rows (height points) width set by --grid-cols
-    p.add_argument('--grid-cols', type=int, default=None)  # columns (width points) default = --grid-size (square)
+    # rows (height points) width set by --grid-cols
+    p.add_argument('--grid-size', type=int, default=4)
+    # columns (width points) default = --grid-size (square)
+    p.add_argument('--grid-cols', type=int, default=None)
     p.add_argument('--cell-size', type=float, default=0.25)
     p.add_argument('--cell-size-x', type=float, default=None)
     p.add_argument('--cell-size-y', type=float, default=None)
@@ -130,13 +132,15 @@ class GridMotionNode(TimedNode):
         self.yaw_rate = 0.0      # [rad/s]
         self.is_finished = False
 
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.pub = self.create_publisher(TwistStamped, args.cmd_vel_topic, qos)
         self.create_subscription(self.pose_msg_type, pose_topic, self.on_pose, qos)
         self.motor_client = self.create_client(SetBool, args.motor_power_service)
         self.timer_period = 1.0 / self.args.rate
         self.control_timer = None
-        self.sender = TwistSender(self, self.pub, args.max_accel, args.max_ang_accel, self.timer_period)
+        self.sender = TwistSender(
+            self, self.pub, args.max_accel, args.max_ang_accel, self.timer_period)
         self.correction = TrackingCorrection(self.get_time_sec, args)
 
     def store_pose(self, x, y, yaw, stamp):
@@ -180,7 +184,8 @@ class GridMotionNode(TimedNode):
 
     def start_control_loop(self):
         rows, cols, _, _ = grid_dimensions(self.args)
-        self.get_logger().info(f'Generating {rows} rows x {cols} cols grid plan ({self.args.platform})...')
+        self.get_logger().info(
+            f'Generating {rows} rows x {cols} cols grid plan ({self.args.platform})...')
         self.plan.clear()
         self.plan.extend(build_grid_plan(self.args, self.home))
         self.control_timer = self.create_timer(self.timer_period, self.control_tick)
@@ -192,7 +197,8 @@ class GridMotionNode(TimedNode):
         now = self.get_time_sec()
 
         if self.last_pose_time is not None and now - self.last_pose_time > self.pose_timeout:
-            self.get_logger().error(f'{self.stale_label} stale for {now - self.last_pose_time:.1f}s, aborting')
+            self.get_logger().error(
+                f'{self.stale_label} stale for {now - self.last_pose_time:.1f}s, aborting')
             self.send(0.0, 0.0, 0.0)
             self.is_finished = True
             return

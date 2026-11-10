@@ -58,7 +58,8 @@ class OdomGridNode(GridMotionNode):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    add_grid_arguments(p, position_tol=0.01, return_position_tol=0.025, angle_tol=0.025, homing_timeout=2.0)
+    add_grid_arguments(
+        p, position_tol=0.01, return_position_tol=0.025, angle_tol=0.025, homing_timeout=2.0)
     p.add_argument('--odom-topic', default='/odom')
     p.add_argument('--odom-timeout', type=float, default=0.5)
     p.add_argument('--reset-odom-service', default='/reset_odometry')
